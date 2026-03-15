@@ -1,0 +1,38 @@
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-ipv6-lb-manager
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: ipv6-lb-manager
+  template:
+    metadata:
+      labels:
+        app: ipv6-lb-manager
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: ipv6-manager-sa
+      hostNetwork: true
+      containers:
+      - name: lb-manager
+        image: mcr.microsoft.com/azure-cli:latest
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            /bin/bash /scripts/manage-lb-ipv6.sh
+            echo "[$(date)] Script finished. Sleeping to keep pod alive."
+            sleep infinity
+        envFrom:
+        - configMapRef:
+            name: ipv6-vmss-lb-manager
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+      volumes:
+      - name: scripts
+        configMap:
+          name: ipv6-vmss-lb-manager
+          defaultMode: 0744

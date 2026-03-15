@@ -1,0 +1,184 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ipv6-vmss-lb-manager
+  namespace: kube-system
+data:
+  LB_NAME: "island-ext-lb"
+  VNET_NAME: "island-vnet"
+  PREFIX_BASE_NAME: "aks-lb-ipv6-prefix"
+  NAT_PORT: "8080"
+  manage-lb-ipv6.sh: |
+    #!/bin/bash
+    set -e
+
+    # ==================== Configuration ====================
+    LB_NAME="${LB_NAME:?LB_NAME env var is required}"
+    VNET_NAME="${VNET_NAME:?VNET_NAME env var is required}"
+    PREFIX_BASE_NAME="${PREFIX_BASE_NAME:-aks-lb-ipv6-prefix}"
+    NAT_PORT="${NAT_PORT:-8080}"
+
+    # ==================== Authentication ====================
+    echo "[$(date)] Authenticating to Azure via Workload Identity..."
+    az login --service-principal \
+      -u "$AZURE_CLIENT_ID" \
+      -t "$AZURE_TENANT_ID" \
+      --federated-token "$(cat "$AZURE_FEDERATED_TOKEN_FILE")" > /dev/null
+
+    # ==================== 1. Metadata Collection ====================
+    VM_NAME=$(curl -s -H Metadata:true \
+      "http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text")
+    RG=$(curl -s -H Metadata:true \
+      "http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text")
+    LOCATION=$(curl -s -H Metadata:true \
+      "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text")
+
+    echo "[$(date)] Node: ${VM_NAME} | RG: ${RG} | Location: ${LOCATION}"
+
+    # ==================== 2. Discover Private IPv6 Address ====================
+    NIC_ID=$(az vm show -g "$RG" -n "$VM_NAME" \
+      --query "networkProfile.networkInterfaces[0].id" -o tsv)
+    NIC_NAME=$(echo "$NIC_ID" | rev | cut -d'/' -f1 | rev)
+
+    INT_PIP6=$(az network nic show -g "$RG" -n "$NIC_NAME" \
+      --query "ipConfigurations[?privateIPAddressVersion=='IPv6'].privateIPAddress | [0]" -o tsv)
+
+    if [ -z "$INT_PIP6" ] || [ "$INT_PIP6" = "None" ]; then
+      echo "[$(date)] ERROR: No IPv6 private address found on NIC ${NIC_NAME}. Exiting."
+      exit 1
+    fi
+    echo "[$(date)] Found private IPv6: ${INT_PIP6}"
+
+    # ==================== Naming Convention ====================
+    FE_NAME="${VM_NAME}-pip6"
+    BE_NAME="${VM_NAME}-BE-ipv6"
+    INBOUND_RULE_NAME="${VM_NAME}-in-rule"
+    OUT_RULE_NAME="${VM_NAME}-out-rule"
+
+    # ==================== 3. Ensure Load Balancer Exists ====================
+    LB_EXISTS=$(az network lb show -g "$RG" -n "$LB_NAME" --query id -o tsv 2>/dev/null || true)
+    if [ -z "$LB_EXISTS" ]; then
+      echo "[$(date)] Load Balancer ${LB_NAME} not found. Creating..."
+      az network lb create -g "$RG" -n "$LB_NAME" -l "$LOCATION" --sku Standard
+    fi
+
+    # ==================== A. Backend Address Pool ====================
+    BE_EXISTS=$(az network lb address-pool show -g "$RG" --lb-name "$LB_NAME" \
+      -n "$BE_NAME" --query id -o tsv 2>/dev/null || true)
+
+    if [ -n "$BE_EXISTS" ]; then
+      echo "[$(date)] Backend pool ${BE_NAME} already exists. Skipping."
+    else
+      echo "[$(date)] Creating backend pool ${BE_NAME} with IP ${INT_PIP6}..."
+      az network lb address-pool create \
+        --resource-group "$RG" \
+        --lb-name "$LB_NAME" \
+        --name "$BE_NAME" \
+        --vnet "$VNET_NAME" \
+        --backend-addresses "[{name:addr1,ip-address:'${INT_PIP6}'}]"
+    fi
+
+    # ==================== B. Public IPv6 from Prefix ====================
+    EXISTING_PIP=$(az network public-ip show -g "$RG" -n "$FE_NAME" \
+      --query id -o tsv 2>/dev/null || true)
+
+    if [ -n "$EXISTING_PIP" ]; then
+      echo "[$(date)] Public IP ${FE_NAME} already exists. Skipping creation."
+    else
+      # Iterative prefix creation loop (find or create a prefix with free IPs)
+      ITERATOR=1
+      SUCCESS=false
+
+      while [ "$SUCCESS" = false ]; do
+        CURRENT_PREFIX_NAME="${PREFIX_BASE_NAME}-${ITERATOR}"
+
+        # Ensure prefix exists
+        PREFIX_ID=$(az network public-ip prefix show -g "$RG" \
+          -n "$CURRENT_PREFIX_NAME" --query id -o tsv 2>/dev/null || true)
+
+        if [ -z "$PREFIX_ID" ]; then
+          echo "[$(date)] Prefix ${CURRENT_PREFIX_NAME} does not exist. Creating (/124 IPv6 prefix)..."
+          PREFIX_ID=$(az network public-ip prefix create -g "$RG" \
+            -n "$CURRENT_PREFIX_NAME" \
+            --length 124 --version IPv6 --location "$LOCATION" \
+            --query id -o tsv)
+        fi
+
+        echo "[$(date)] Attempting to create Public IP ${FE_NAME} in prefix ${CURRENT_PREFIX_NAME}..."
+
+        ERROR_MSG=$(az network public-ip create \
+          -g "$RG" \
+          -n "$FE_NAME" \
+          --version IPv6 \
+          --sku Standard \
+          --allocation-method Static \
+          --public-ip-prefix "$PREFIX_ID" \
+          --tags managedBy=ipv6-vmss-lb-manager 2>&1 || true)
+
+        if echo "$ERROR_MSG" | grep -qi "PublicIpPrefixOutOfIpAddresses"; then
+          echo "[$(date)] Prefix ${CURRENT_PREFIX_NAME} is full. Trying next prefix..."
+          ITERATOR=$((ITERATOR + 1))
+        elif echo "$ERROR_MSG" | grep -qi "ERROR"; then
+          echo "[$(date)] Fatal Azure Error: $ERROR_MSG"
+          exit 1
+        else
+          echo "[$(date)] Successfully created Public IP ${FE_NAME} from ${CURRENT_PREFIX_NAME}."
+          SUCCESS=true
+        fi
+      done
+    fi
+
+    # Assign PIP as frontend IP on load balancer
+    FE_EXISTS=$(az network lb frontend-ip show -g "$RG" --lb-name "$LB_NAME" \
+      -n "$FE_NAME" --query id -o tsv 2>/dev/null || true)
+
+    if [ -n "$FE_EXISTS" ]; then
+      echo "[$(date)] Frontend IP ${FE_NAME} already exists on LB. Skipping."
+    else
+      echo "[$(date)] Assigning Public IP ${FE_NAME} as frontend on LB ${LB_NAME}..."
+      az network lb frontend-ip create \
+        -g "$RG" \
+        -n "$FE_NAME" \
+        --lb-name "$LB_NAME" \
+        --public-ip-address "$FE_NAME"
+    fi
+
+    # ==================== C. Outbound Rule ====================
+    OUT_EXISTS=$(az network lb outbound-rule show -g "$RG" --lb-name "$LB_NAME" \
+      -n "$OUT_RULE_NAME" --query id -o tsv 2>/dev/null || true)
+
+    if [ -n "$OUT_EXISTS" ]; then
+      echo "[$(date)] Outbound rule ${OUT_RULE_NAME} already exists. Skipping."
+    else
+      echo "[$(date)] Creating outbound rule ${OUT_RULE_NAME}..."
+      az network lb outbound-rule create \
+        -g "$RG" \
+        --lb-name "$LB_NAME" \
+        --name "$OUT_RULE_NAME" \
+        --frontend-ip-configs "$FE_NAME" \
+        --backend-address-pool "$BE_NAME" \
+        --protocol All
+    fi
+
+    # ==================== D. Inbound NAT Rule ====================
+    IN_EXISTS=$(az network lb inbound-nat-rule show -g "$RG" --lb-name "$LB_NAME" \
+      -n "$INBOUND_RULE_NAME" --query id -o tsv 2>/dev/null || true)
+
+    if [ -n "$IN_EXISTS" ]; then
+      echo "[$(date)] Inbound NAT rule ${INBOUND_RULE_NAME} already exists. Skipping."
+    else
+      echo "[$(date)] Creating inbound NAT rule ${INBOUND_RULE_NAME} (TCP ${NAT_PORT})..."
+      az network lb inbound-nat-rule create \
+        -g "$RG" \
+        --lb-name "$LB_NAME" \
+        --name "$INBOUND_RULE_NAME" \
+        --protocol TCP \
+        --frontend-ip-name "$FE_NAME" \
+        --frontend-port-range-start "$NAT_PORT" \
+        --frontend-port-range-end "$NAT_PORT" \
+        --floating-ip false \
+        --backend-port "$NAT_PORT" \
+        --backend-address-pool "$BE_NAME"
+    fi
+
+    echo "[$(date)] ===== LB IPv6 setup complete for ${VM_NAME} ====="
