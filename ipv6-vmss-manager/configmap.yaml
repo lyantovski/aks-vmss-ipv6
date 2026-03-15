@@ -93,8 +93,8 @@ data:
     echo "[$(date)] Found private IPv6: ${INT_PIP6}"
 
     # ==================== Startup Jitter ====================
-    # Stagger pods so they don't all mutate the LB simultaneously
-    JITTER=$(( (INSTANCE_ID * 30) + (RANDOM % 15) ))
+    # Short random delay to reduce simultaneous LB mutations; retries handle the rest
+    JITTER=$(( (RANDOM % 45) + (INSTANCE_ID % 5) * 10 ))
     echo "[$(date)] Waiting ${JITTER}s (instance jitter) to avoid LB conflicts..."
     sleep "$JITTER"
 

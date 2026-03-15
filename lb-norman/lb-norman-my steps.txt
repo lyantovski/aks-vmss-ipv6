@@ -516,3 +516,203 @@ az network lb inbound-nat-rule create \
  --floating-ip false \
  --backend-port 8080 \
  --backend-address-pool "$BE_NAME"
+
+# Enable Workload identity on AKS:
+$ echo $RG
+island-rg
+
+$ echo $AKS
+island-aks-byo
+
+az aks update \
+  -g $RG \
+  -n $AKS \
+  --enable-oidc-issuer \
+  --enable-workload-identity
+
+OIDC_ISSUER=$(az aks show \
+  -g $RG \
+  -n $AKS \
+  --query "oidcIssuerProfile.issuerUrl" -o tsv)
+
+echo "$OIDC_ISSUER"
+
+Output:
+echo "$OIDC_ISSUER"
+https://swedencentral.oic.prod-aks.azure.com/b393e737-e60a-43b1-828e-04d7edee2de1/855b35e8-bd18-4061-bcf5-c0d675f008c8/
+
+IPV6_IDENTITY_NAME="ipv6-manager-identity"
+az identity create --name $IPV6_IDENTITY_NAME --resource-group $RG --location $LOCATION
+
+Output:
+$ az identity create --name $IPV6_IDENTITY_NAME --resource-group $RG --location $LOCATION
+{
+  "clientId": "528eed55-b7e4-48bb-9644-a47c2b5ce50c",
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/island-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/ipv6-manager-identity",
+  "location": "swedencentral",
+  "name": "ipv6-manager-identity",
+  "principalId": "152e47ba-5c39-4e89-866e-046e53956548",
+  "resourceGroup": "island-rg",
+  "systemData": null,
+  "tags": {},
+  "tenantId": "b393e737-e60a-43b1-828e-04d7edee2de1",
+  "type": "Microsoft.ManagedIdentity/userAssignedIdentities"
+}
+
+USER_ASSIGNED_CLIENT_ID=$(az identity show --name $IPV6_IDENTITY_NAME --resource-group $RG --query clientId -o tsv)
+USER_ASSIGNED_PRINCIPAL_ID=$(az identity show --name $IPV6_IDENTITY_NAME --resource-group $RG --query principalId -o tsv)
+
+Output:
+$ echo $USER_ASSIGNED_CLIENT_ID
+$ echo $USER_ASSIGNED_PRINCIPAL_ID
+528eed55-b7e4-48bb-9644-a47c2b5ce50c
+152e47ba-5c39-4e89-866e-046e53956548
+
+NODE_RG=$(az aks show -g $RG -n $AKS --query nodeResourceGroup -o tsv)
+
+Output:
+$ echo $NODE_RG
+MC_island-rg_island-aks-byo_swedencentral
+
+SUBSCRIPTION_ID="a303e0dc-f916-4c4a-8af1-e40f6163e1bb"
+
+az role assignment create --role "Network Contributor" \
+    --assignee-object-id $USER_ASSIGNED_PRINCIPAL_ID \
+    --assignee-principal-type "ServicePrincipal" \
+    --scope "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$NODE_RG"
+
+az role assignment create --role "Network Contributor" \
+    --assignee-object-id $USER_ASSIGNED_PRINCIPAL_ID \
+    --assignee-principal-type "ServicePrincipal" \
+    --scope "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RG"
+
+az role assignment create \
+  --assignee-object-id "$USER_ASSIGNED_PRINCIPAL_ID" \
+  --assignee-principal-type "ServicePrincipal" \
+  --role "Virtual Machine Contributor" \
+  --scope "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$NODE_RG"
+
+
+az identity federated-credential create --name "ipv6-manager-fed" \
+    --identity-name $IPV6_IDENTITY_NAME \
+    --resource-group $RG \
+    --issuer "${OIDC_ISSUER}" \
+    --subject "system:serviceaccount:kube-system:ipv6-manager-sa" \
+    --audience api://AzureADTokenExchange
+
+# Log of daemonset example:
+islandadmin@jump-vm-1:~/aks-vmss-ipv6/ipv6-vmss-manager$ kubectl logs node-ipv6-lb-manager-x5l5n -n kube-system
+[Sun Mar 15 16:15:50 UTC 2026] Authenticating to Azure via Workload Identity...
+[Sun Mar 15 16:15:53 UTC 2026] Node: aks-system-34603732-vmss_1 | VMSS: aks-system-34603732-vmss | MC_RG: MC_island-rg_island-aks-byo_swedencentral | INFRA_RG: island-rg | Location: SwedenC
+entral
+[Sun Mar 15 16:15:53 UTC 2026] VMSS detected: aks-system-34603732-vmss, Instance ID: 1, Computer Name: aks-system-34603732-vmss000001
+[Sun Mar 15 16:15:55 UTC 2026] Found private IPv6: fdf0:1e2d:3c4b::5
+[Sun Mar 15 16:15:58 UTC 2026] Backend pool aks-system-34603732-vmss000001-BE-ipv6 already exists. Skipping.
+[Sun Mar 15 16:16:00 UTC 2026] Public IP aks-system-34603732-vmss000001-pip6 already exists. Skipping creation.
+[Sun Mar 15 16:16:01 UTC 2026] Frontend IP aks-system-34603732-vmss000001-pip6 already exists on LB. Skipping.
+[Sun Mar 15 16:16:02 UTC 2026] Outbound rule aks-system-34603732-vmss000001-out-rule already exists. Skipping.
+[Sun Mar 15 16:16:04 UTC 2026] Inbound NAT rule aks-system-34603732-vmss000001-in-rule already exists. Skipping.
+[Sun Mar 15 16:16:04 UTC 2026] ===== LB IPv6 setup complete for aks-system-34603732-vmss_1 =====
+[Sun Mar 15 16:16:04 UTC 2026] Script finished. Sleeping to keep pod alive.
+
+# Lof of new VMSS instance:
+islandadmin@jump-vm-1:~/aks-vmss-ipv6/ipv6-vmss-manager$ kubectl logs node-ipv6-lb-manager-5c4m8 -n kube-system
+[Sun Mar 15 16:19:11 UTC 2026] Authenticating to Azure via Workload Identity...
+[Sun Mar 15 16:19:14 UTC 2026] Node: aks-system-34603732-vmss_3 | VMSS: aks-system-34603732-vmss | MC_RG: MC_island-rg_island-aks-byo_swedencentral | INFRA_RG: island-rg | Location: SwedenC
+entral
+[Sun Mar 15 16:19:14 UTC 2026] VMSS detected: aks-system-34603732-vmss, Instance ID: 3, Computer Name: aks-system-34603732-vmss000003
+[Sun Mar 15 16:19:15 UTC 2026] Found private IPv6: fdf0:1e2d:3c4b::8
+[Sun Mar 15 16:19:17 UTC 2026] Creating backend pool aks-system-34603732-vmss000003-BE-ipv6 with IP fdf0:1e2d:3c4b::8...
+{
+  "etag": "W/\"11a128c7-59ce-4840-95bc-0dee53addb3c\"",
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/backendAddressPools/aks-system-34603732-vmss000
+003-BE-ipv6",
+  "loadBalancerBackendAddresses": [
+    {
+      "ipAddress": "fdf0:1e2d:3c4b::8",
+      "name": "addr1",
+      "virtualNetwork": {
+        "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/virtualNetworks/island-vnet",
+        "resourceGroup": "island-rg"
+      }
+    }
+  ],
+  "name": "aks-system-34603732-vmss000003-BE-ipv6",
+  "provisioningState": "Succeeded",
+  "resourceGroup": "island-rg",
+  "type": "Microsoft.Network/loadBalancers/backendAddressPools"
+}
+[Sun Mar 15 16:19:22 UTC 2026] Prefix aks-lb-ipv6-prefix-1 does not exist. Creating (/124 IPv6 prefix)...
+[Sun Mar 15 16:19:35 UTC 2026] Attempting to create Public IP aks-system-34603732-vmss000003-pip6 in prefix aks-lb-ipv6-prefix-1...
+[Sun Mar 15 16:19:37 UTC 2026] Successfully created Public IP aks-system-34603732-vmss000003-pip6 from aks-lb-ipv6-prefix-1.
+[Sun Mar 15 16:19:38 UTC 2026] Assigning Public IP aks-system-34603732-vmss000003-pip6 as frontend on LB island-ext-lb...
+{
+  "etag": "W/\"80e18e8a-d293-432c-91d3-981e730db792\"",
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/frontendIPConfigurations/aks-system-34603732-vm
+ss000003-pip6",
+  "name": "aks-system-34603732-vmss000003-pip6",
+  "privateIPAllocationMethod": "Dynamic",
+  "provisioningState": "Succeeded",
+  "publicIPAddress": {
+    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/publicIPAddresses/aks-system-34603732-vmss000003-pip6",
+    "resourceGroup": "island-rg"
+  },
+  "resourceGroup": "island-rg",
+  "type": "Microsoft.Network/loadBalancers/frontendIPConfigurations"
+}
+[Sun Mar 15 16:19:41 UTC 2026] Creating outbound rule aks-system-34603732-vmss000003-out-rule...
+{
+  "allocatedOutboundPorts": 1024,
+  "backendAddressPool": {
+    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/backendAddressPools/aks-system-34603732-vmss0
+00003-BE-ipv6",
+    "resourceGroup": "island-rg"
+  },
+  "enableTcpReset": false,
+  "etag": "W/\"566fcae0-5fba-4ba6-b42c-85696b8846be\"",
+  "frontendIPConfigurations": [
+    {
+      "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/frontendIPConfigurations/aks-system-3460373
+2-vmss000003-pip6",
+      "resourceGroup": "island-rg"
+    }
+  ],
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/outboundRules/aks-system-34603732-vmss000003-ou
+t-rule",
+  "idleTimeoutInMinutes": 4,
+  "name": "aks-system-34603732-vmss000003-out-rule",
+  "protocol": "All",
+  "provisioningState": "Succeeded",
+  "resourceGroup": "island-rg",
+  "type": "Microsoft.Network/loadBalancers/outboundRules"
+}
+[Sun Mar 15 16:19:54 UTC 2026] Creating inbound NAT rule aks-system-34603732-vmss000003-in-rule (TCP 8080)...
+{
+  "backendAddressPool": {
+    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/backendAddressPools/aks-system-34603732-vmss0
+00003-BE-ipv6",
+    "resourceGroup": "island-rg"
+  },
+  "backendPort": 8080,
+  "enableFloatingIP": false,
+  "enableTcpReset": false,
+  "etag": "W/\"37c7079a-13a5-4fe5-b595-ed14c96c3ff5\"",
+  "frontendIPConfiguration": {
+    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/frontendIPConfigurations/aks-system-34603732-
+vmss000003-pip6",
+    "resourceGroup": "island-rg"
+  },
+  "frontendPort": 0,
+  "frontendPortRangeEnd": 8080,
+  "frontendPortRangeStart": 8080,
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/inboundNatRules/aks-system-34603732-vmss000003-
+in-rule",
+  "idleTimeoutInMinutes": 4,
+  "name": "aks-system-34603732-vmss000003-in-rule",
+  "protocol": "Tcp",
+  "provisioningState": "Succeeded",
+  "resourceGroup": "island-rg",
+  "type": "Microsoft.Network/loadBalancers/inboundNatRules"
+}
+[Sun Mar 15 16:20:06 UTC 2026] ===== LB IPv6 setup complete for aks-system-34603732-vmss_3 =====
+[Sun Mar 15 16:20:06 UTC 2026] Script finished. Sleeping to keep pod alive.
