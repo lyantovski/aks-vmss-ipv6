@@ -1,0 +1,95 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ipv6-lb-orphan-reaper
+  namespace: kube-system
+spec:
+  schedule: "0 * * * *" # Runs every hour
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 300 # Clean up job after 5 minutes
+      template:
+        metadata:
+          labels:
+            azure.workload.identity/use: "true"
+        spec:
+          serviceAccountName: ipv6-manager-sa
+          containers:
+          - name: reaper
+            image: mcr.microsoft.com/azure-cli:latest
+            envFrom:
+            - configMapRef:
+                name: ipv6-vmss-lb-manager
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              # 1. Login
+              echo "[$(date)] Authenticating to Azure via Workload Identity..."
+              az login --service-principal -u $AZURE_CLIENT_ID -t $AZURE_TENANT_ID \
+                --federated-token $(cat $AZURE_FEDERATED_TOKEN_FILE) > /dev/null
+
+              echo "[$(date)] Starting orphan scan in Resource Group: ${INFRA_RG}"
+
+              # 2. Find orphaned Public IPs created by ipv6-vmss-lb-manager that are unattached
+              ORPHAN_DATA=$(az network public-ip list -g "$INFRA_RG" \
+                --query "[?tags.managedBy=='ipv6-vmss-lb-manager' && ipConfiguration==null].[id,name,ipAddress]" -o tsv)
+
+              if [ -z "$ORPHAN_DATA" ]; then
+                echo "[$(date)] Scan complete: No orphaned IPv6 addresses found."
+                exit 0
+              fi
+
+              COUNT=$(echo "$ORPHAN_DATA" | wc -l)
+              echo "[$(date)] Found $COUNT orphaned resources to clean up."
+
+              # 3. For each orphaned PIP, also clean up related LB resources
+              echo "$ORPHAN_DATA" | while read -r id name ip; do
+                echo "------------------------------------------------------------"
+                echo "[$(date)] ORPHANED PIP:"
+                echo "  NAME: $name"
+                echo "  IP:   ${ip:-N/A}"
+                echo "  ID:   $id"
+
+                # Derive LB resource names from PIP name (e.g. aks-system-...-pip6)
+                # Strip "-pip6" suffix to get the computer name
+                COMPUTER_NAME="${name%-pip6}"
+                BE_NAME="${COMPUTER_NAME}-BE-ipv6"
+                INBOUND_RULE_NAME="${COMPUTER_NAME}-in-rule"
+                OUT_RULE_NAME="${COMPUTER_NAME}-out-rule"
+                FE_NAME="$name"
+
+                # Delete inbound NAT rule
+                echo "[$(date)] Removing inbound NAT rule: ${INBOUND_RULE_NAME}..."
+                az network lb inbound-nat-rule delete -g "$INFRA_RG" \
+                  --lb-name "$LB_NAME" --name "$INBOUND_RULE_NAME" 2>/dev/null || true
+
+                # Delete outbound rule
+                echo "[$(date)] Removing outbound rule: ${OUT_RULE_NAME}..."
+                az network lb outbound-rule delete -g "$INFRA_RG" \
+                  --lb-name "$LB_NAME" --name "$OUT_RULE_NAME" 2>/dev/null || true
+
+                # Delete frontend IP config
+                echo "[$(date)] Removing frontend IP: ${FE_NAME}..."
+                az network lb frontend-ip delete -g "$INFRA_RG" \
+                  --lb-name "$LB_NAME" --name "$FE_NAME" 2>/dev/null || true
+
+                # Delete backend pool
+                echo "[$(date)] Removing backend pool: ${BE_NAME}..."
+                az network lb address-pool delete -g "$INFRA_RG" \
+                  --lb-name "$LB_NAME" --name "$BE_NAME" 2>/dev/null || true
+
+                # Delete orphaned Public IP
+                echo "[$(date)] Deleting Public IP: ${name}..."
+                if az network public-ip delete --ids "$id"; then
+                  echo "[$(date)] Successfully deleted ${name} and its LB resources."
+                else
+                  echo "[$(date)] FAILED to delete ${name}. Check Azure Activity Log."
+                fi
+              done
+
+              echo "------------------------------------------------------------"
+              echo "[$(date)] Cleanup job finished."
+          restartPolicy: OnFailure
