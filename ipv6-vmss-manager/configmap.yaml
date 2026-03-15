@@ -32,16 +32,31 @@ data:
       "http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text")
     LOCATION=$(curl -s -H Metadata:true \
       "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text")
+    VMSS_NAME=$(curl -s -H Metadata:true \
+      "http://169.254.169.254/metadata/instance/compute/vmScaleSetName?api-version=2021-02-01&format=text")
 
-    echo "[$(date)] Node: ${VM_NAME} | RG: ${RG} | Location: ${LOCATION}"
+    echo "[$(date)] Node: ${VM_NAME} | VMSS: ${VMSS_NAME} | RG: ${RG} | Location: ${LOCATION}"
 
     # ==================== 2. Discover Private IPv6 Address ====================
-    NIC_ID=$(az vm show -g "$RG" -n "$VM_NAME" \
-      --query "networkProfile.networkInterfaces[0].id" -o tsv)
-    NIC_NAME=$(echo "$NIC_ID" | rev | cut -d'/' -f1 | rev)
+    if [ -n "$VMSS_NAME" ]; then
+      # VMSS instance — extract instance ID and derive computer name
+      INSTANCE_ID="${VM_NAME##*_}"
+      COMPUTER_NAME=$(printf "%s%06d" "$VMSS_NAME" "$INSTANCE_ID")
+      echo "[$(date)] VMSS detected: ${VMSS_NAME}, Instance ID: ${INSTANCE_ID}, Computer Name: ${COMPUTER_NAME}"
 
-    INT_PIP6=$(az network nic show -g "$RG" -n "$NIC_NAME" \
-      --query "ipConfigurations[?privateIPAddressVersion=='IPv6'].privateIPAddress | [0]" -o tsv)
+      INT_PIP6=$(az vmss nic list-vm-nics -g "$RG" \
+        --vmss-name "$VMSS_NAME" --instance-id "$INSTANCE_ID" \
+        --query "[0].ipConfigurations[?privateIPAddressVersion=='IPv6'].privateIPAddress | [0]" -o tsv)
+    else
+      # Standalone VM
+      COMPUTER_NAME="$VM_NAME"
+      NIC_ID=$(az vm show -g "$RG" -n "$VM_NAME" \
+        --query "networkProfile.networkInterfaces[0].id" -o tsv)
+      NIC_NAME=$(echo "$NIC_ID" | rev | cut -d'/' -f1 | rev)
+
+      INT_PIP6=$(az network nic show -g "$RG" -n "$NIC_NAME" \
+        --query "ipConfigurations[?privateIPAddressVersion=='IPv6'].privateIPAddress | [0]" -o tsv)
+    fi
 
     if [ -z "$INT_PIP6" ] || [ "$INT_PIP6" = "None" ]; then
       echo "[$(date)] ERROR: No IPv6 private address found on NIC ${NIC_NAME}. Exiting."
@@ -50,10 +65,10 @@ data:
     echo "[$(date)] Found private IPv6: ${INT_PIP6}"
 
     # ==================== Naming Convention ====================
-    FE_NAME="${VM_NAME}-pip6"
-    BE_NAME="${VM_NAME}-BE-ipv6"
-    INBOUND_RULE_NAME="${VM_NAME}-in-rule"
-    OUT_RULE_NAME="${VM_NAME}-out-rule"
+    FE_NAME="${COMPUTER_NAME}-pip6"
+    BE_NAME="${COMPUTER_NAME}-BE-ipv6"
+    INBOUND_RULE_NAME="${COMPUTER_NAME}-in-rule"
+    OUT_RULE_NAME="${COMPUTER_NAME}-out-rule"
 
     # ==================== 3. Ensure Load Balancer Exists ====================
     LB_EXISTS=$(az network lb show -g "$RG" -n "$LB_NAME" --query id -o tsv 2>/dev/null || true)
