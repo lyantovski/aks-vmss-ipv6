@@ -4,9 +4,9 @@ metadata:
   name: ipv6-vmss-lb-manager
   namespace: kube-system
 data:
-  LB_NAME: "island-ext-lb"
-  VNET_NAME: "island-vnet"
-  INFRA_RG: "island-rg"
+  LB_NAME: "customer-ext-lb"
+  VNET_NAME: "customer-vnet"
+  INFRA_RG: "customer-rg"
   PREFIX_BASE_NAME: "aks-lb-ipv6-prefix"
   NAT_PORT: "8080"
   manage-lb-ipv6.sh: |

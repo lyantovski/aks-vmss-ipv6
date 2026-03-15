@@ -1,5 +1,4 @@
-az login --tenant b393e737-e60a-43b1-828e-04d7edee2de1
-
+az login --tenant <tenantId>
 
 # allow multiple public ip config on subscription
 az feature register --namespace "Microsoft.Network" -n "AllowMultipleIpConfigurationsPerNic"
@@ -7,15 +6,15 @@ az provider register -n Microsoft.Network
 
 # ====== setup ======
 LOCATION="swedencentral"
-RG="island-rg"
-VNET="island-vnet"
-SUBNET="island-snet-aks"
+RG="customer-rg"
+VNET="customer-vnet"
+SUBNET="customer-snet-aks"
 VNET_V4="172.16.0.0/16"
 VNET_V6="fdf0:1e2d:3c4b::/48"   
 SUBNET_V4="172.16.1.0/24"
 SUBNET_V6="fdf0:1e2d:3c4b::/64"
 
-SUBNET_ACR="island-snet-acr"
+SUBNET_ACR="customer-snet-acr"
 SUBNET_ACR_V4="172.16.2.0/24"
 
 # resource group creation
@@ -41,7 +40,7 @@ echo "$ACR_SUBNET_ID"
 
 Output:
 $ echo "$ACR_SUBNET_ID"
-/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/virtualNetworks/island-vnet/subnets/island-snet-acr
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/virtualNetworks/customer-vnet/subnets/customer-snet-acr
 
 #subnet id
 SUBNET_ID=$(az network vnet subnet show -g "$RG" --vnet-name "$VNET" -n "$SUBNET" --query id -o tsv)
@@ -49,14 +48,14 @@ echo "$SUBNET_ID"
 
 Output:
 $ echo "$SUBNET_ID"
-/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/virtualNetworks/island-vnet/subnets/island-snet-aks
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/virtualNetworks/customer-vnet/subnets/customer-snet-aks
 
 #create acr
-ACR_NAME="islandacr$RANDOM"
+ACR_NAME="customeracr$RANDOM"
 
 Output:
 $ echo $ACR_NAME
-islandacr22149
+customeracr22149
 
 az acr create -g "$RG" \
  --name "$ACR_NAME" \
@@ -68,7 +67,7 @@ echo $REGISTRY_ID
 
 Output:
 echo $REGISTRY_ID
-/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.ContainerRegistry/registries/islandacr22149
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.ContainerRegistry/registries/customeracr22149
 
 az acr cache create -n aks-managed-mcr \
  -r "$ACR_NAME" \
@@ -95,7 +94,7 @@ Output:
 echo $NETWORK_INTERFACE_ID
 
 $ echo $NETWORK_INTERFACE_ID
-/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/networkInterfaces/ACRCacheEndpoint.nic.f2aa3d75-3eb2-4c26-b63d-f6938c837c30
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/networkInterfaces/ACRCacheEndpoint.nic.f2aa3d75-3eb2-4c26-b63d-f6938c837c30
 
 echo "Registry Private IP: $REGISTRY_PRIVATE_IP"
 echo "Data Endpoint Private IP: $DATA_ENDPOINT_PRIVATE_IP"
@@ -142,8 +141,8 @@ az network private-dns record-set a add-record \
  --ipv4-address "$DATA_ENDPOINT_PRIVATE_IP"
 
 # managed identities
-CLUSTER_IDENTITY_NAME="island-aks-identity"
-KUBELET_IDENTITY_NAME="island-aks-kubelet-identity"
+CLUSTER_IDENTITY_NAME="customer-aks-identity"
+KUBELET_IDENTITY_NAME="customer-aks-kubelet-identity"
 
 az identity create --name ${CLUSTER_IDENTITY_NAME} --resource-group ${RG}
 az identity create --name ${KUBELET_IDENTITY_NAME} --resource-group ${RG}
@@ -153,7 +152,7 @@ CLUSTER_IDENTITY_PRINCIPAL_ID=$(az identity show --name ${CLUSTER_IDENTITY_NAME}
 
 Output:
 $ echo $CLUSTER_IDENTITY_RESOURCE_ID
-/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/island-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/island-aks-identity
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/customer-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/customer-aks-identity
 $ echo $CLUSTER_IDENTITY_PRINCIPAL_ID
 d1046edc-789f-4118-9bc8-f6df3cb9b8cf
 
@@ -162,7 +161,7 @@ KUBELET_IDENTITY_PRINCIPAL_ID=$(az identity show --name ${KUBELET_IDENTITY_NAME}
 
 Output:
 $ echo $KUBELET_IDENTITY_RESOURCE_ID
-/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/island-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/island-aks-kubelet-identity
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/customer-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/customer-aks-kubelet-identity
 $ echo $KUBELET_IDENTITY_PRINCIPAL_ID
 fff60c38-af4f-45e5-a680-9ece5afa7143
 
@@ -174,9 +173,9 @@ echo "Kubelet Identity Principal ID: $KUBELET_IDENTITY_PRINCIPAL_ID"
 
 Output:
 
-Cluster Identity Resource ID: /subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/island-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/island-aks-identity
+Cluster Identity Resource ID: /subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/customer-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/customer-aks-identity
 Cluster Identity Principal ID: d1046edc-789f-4118-9bc8-f6df3cb9b8cf
-Kubelet Identity Resource ID: /subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/island-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/island-aks-kubelet-identity
+Kubelet Identity Resource ID: /subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/customer-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/customer-aks-kubelet-identity
 Kubelet Identity Principal ID: fff60c38-af4f-45e5-a680-9ece5afa7143
 
 az role assignment create \
@@ -185,7 +184,7 @@ az role assignment create \
  --assignee-principal-type ServicePrincipal
 
 # ========== create aks cluster with ipv4 BYO CNI ==========
-AKS="island-aks-byo"
+AKS="customer-aks-byo"
 
 #dual stack config
 POD_CIDR_V4="10.244.0.0/16"
@@ -224,7 +223,7 @@ az aks create \
 # we need to create a jump vm.
 
 VM_NAME="jump-vm-1"
-ADMIN_USER="islandadmin"
+ADMIN_USER="customeradmin"
 ADMIN_PASSWORD="vwnIgH@{ad8'#KtB_PK("
 IPV4_PIP_NAME="${VM_NAME}-pip4-${RANDOM}"
 IPV6_PIP_NAME="${VM_NAME}-pip6-${RANDOM}"
@@ -287,16 +286,16 @@ $ az vm create   --resource-group "$RG"   --name "$VM_NAME"   --location "$LOCAT
 The default value of '--size' will be changed to 'Standard_D2s_v5' from 'Standard_DS1_v2' in a future release.
 {
   "fqdns": "",
-  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Compute/virtualMachines/jump-vm-1",
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Compute/virtualMachines/jump-vm-1",
   "location": "swedencentral",
   "macAddress": "7C-1E-52-FA-28-D6",
   "powerState": "VM running",
   "privateIpAddress": "172.16.1.8,fdf0:1e2d:3c4b::7",
   "publicIpAddress": "20.91.202.105,2603:1020:1001:22::52",
-  "resourceGroup": "island-rg"
+  "resourceGroup": "customer-rg"
 }
 
-ADMIN_USER="islandadmin"
+ADMIN_USER="customeradmin"
 ADMIN_PASSWORD="vwnIgH@{ad8'#KtB_PK("
 
 #getting credentials file for aks
@@ -306,11 +305,11 @@ az aks get-credentials \
  --file - > kubeconfig.yaml
 
  #cp kubeconfig.yaml ~/.kube/config
- scp ./kubeconfig.yaml islandadmin@20.91.202.105:/home/root/ #--didnt work for me, used Bastion
+ scp ./kubeconfig.yaml customeradmin@20.91.202.105:/home/root/ #--didnt work for me, used Bastion
 
 # ============ create LB and assign pip to vm ================
 # create lb
-LB_NAME="island-ext-lb"
+LB_NAME="customer-ext-lb"
 
 az network lb create \
   -g "$RG" \
@@ -323,7 +322,7 @@ echo $LB_ID
 
 Output:
 $ echo $LB_ID
-/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/loadBalancers/customer-ext-lb
 
 # create pip for each vm
 # Instance #1
@@ -333,7 +332,7 @@ $ echo $LB_ID
 # Public IPv6: fdf0:1e2d:3c4b::4
 
 VM="aks-system-34603732-vmss000000" #VM Name
-MC_RG="MC_island-rg_island-aks-byo_swedencentral" #MC RG
+MC_RG="MC_customer-rg_customer-aks-byo_swedencentral" #MC RG
 INT_PIP6="fdf0:1e2d:3c4b::4" #private ipv6 assigned to node
 
 # general naming scheme
@@ -397,7 +396,7 @@ az network lb inbound-nat-rule create \
 # Public IPv6: fdf0:1e2d:3c4b::5
 
 VM="aks-system-34603732-vmss000001" #VM Name
-MC_RG="MC_island-rg_island-aks-byo_swedencentral" #MC RG
+MC_RG="MC_customer-rg_customer-aks-byo_swedencentral" #MC RG
 INT_PIP6="fdf0:1e2d:3c4b::5" #private ipv6 assigned to node
 
 # general naming scheme
@@ -461,7 +460,7 @@ az network lb inbound-nat-rule create \
 # Public IPv6: fdf0:1e2d:3c4b::6
 
 VM="aks-system-34603732-vmss000002" #VM Name
-MC_RG="MC_island-rg_island-aks-byo_swedencentral" #MC RG
+MC_RG="MC_customer-rg_customer-aks-byo_swedencentral" #MC RG
 INT_PIP6="fdf0:1e2d:3c4b::5" #private ipv6 assigned to node
 
 # general naming scheme
@@ -519,10 +518,10 @@ az network lb inbound-nat-rule create \
 
 # Enable Workload identity on AKS:
 $ echo $RG
-island-rg
+customer-rg
 
 $ echo $AKS
-island-aks-byo
+customer-aks-byo
 
 az aks update \
   -g $RG \
@@ -548,11 +547,11 @@ Output:
 $ az identity create --name $IPV6_IDENTITY_NAME --resource-group $RG --location $LOCATION
 {
   "clientId": "528eed55-b7e4-48bb-9644-a47c2b5ce50c",
-  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/island-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/ipv6-manager-identity",
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/customer-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/ipv6-manager-identity",
   "location": "swedencentral",
   "name": "ipv6-manager-identity",
   "principalId": "152e47ba-5c39-4e89-866e-046e53956548",
-  "resourceGroup": "island-rg",
+  "resourceGroup": "customer-rg",
   "systemData": null,
   "tags": {},
   "tenantId": "b393e737-e60a-43b1-828e-04d7edee2de1",
@@ -572,7 +571,7 @@ NODE_RG=$(az aks show -g $RG -n $AKS --query nodeResourceGroup -o tsv)
 
 Output:
 $ echo $NODE_RG
-MC_island-rg_island-aks-byo_swedencentral
+MC_customer-rg_customer-aks-byo_swedencentral
 
 SUBSCRIPTION_ID="a303e0dc-f916-4c4a-8af1-e40f6163e1bb"
 
@@ -600,10 +599,14 @@ az identity federated-credential create --name "ipv6-manager-fed" \
     --subject "system:serviceaccount:kube-system:ipv6-manager-sa" \
     --audience api://AzureADTokenExchange
 
+These were manual steps to assign IPv6 1:1 for VMSS on Load Balancer.
+
+Here are examples for logs of running daemonset and cronjob while using ipv6-vmss-manager components.
+
 # Log of daemonset example:
-islandadmin@jump-vm-1:~/aks-vmss-ipv6/ipv6-vmss-manager$ kubectl logs node-ipv6-lb-manager-x5l5n -n kube-system
+customeradmin@jump-vm-1:~/aks-vmss-ipv6/ipv6-vmss-manager$ kubectl logs node-ipv6-lb-manager-x5l5n -n kube-system
 [Sun Mar 15 16:15:50 UTC 2026] Authenticating to Azure via Workload Identity...
-[Sun Mar 15 16:15:53 UTC 2026] Node: aks-system-34603732-vmss_1 | VMSS: aks-system-34603732-vmss | MC_RG: MC_island-rg_island-aks-byo_swedencentral | INFRA_RG: island-rg | Location: SwedenC
+[Sun Mar 15 16:15:53 UTC 2026] Node: aks-system-34603732-vmss_1 | VMSS: aks-system-34603732-vmss | MC_RG: MC_customer-rg_customer-aks-byo_swedencentral | INFRA_RG: customer-rg | Location: SwedenC
 entral
 [Sun Mar 15 16:15:53 UTC 2026] VMSS detected: aks-system-34603732-vmss, Instance ID: 1, Computer Name: aks-system-34603732-vmss000001
 [Sun Mar 15 16:15:55 UTC 2026] Found private IPv6: fdf0:1e2d:3c4b::5
@@ -616,102 +619,102 @@ entral
 [Sun Mar 15 16:16:04 UTC 2026] Script finished. Sleeping to keep pod alive.
 
 # Lof of new VMSS instance:
-islandadmin@jump-vm-1:~/aks-vmss-ipv6/ipv6-vmss-manager$ kubectl logs node-ipv6-lb-manager-5c4m8 -n kube-system
+customeradmin@jump-vm-1:~/aks-vmss-ipv6/ipv6-vmss-manager$ kubectl logs node-ipv6-lb-manager-5c4m8 -n kube-system
 [Sun Mar 15 16:19:11 UTC 2026] Authenticating to Azure via Workload Identity...
-[Sun Mar 15 16:19:14 UTC 2026] Node: aks-system-34603732-vmss_3 | VMSS: aks-system-34603732-vmss | MC_RG: MC_island-rg_island-aks-byo_swedencentral | INFRA_RG: island-rg | Location: SwedenC
+[Sun Mar 15 16:19:14 UTC 2026] Node: aks-system-34603732-vmss_3 | VMSS: aks-system-34603732-vmss | MC_RG: MC_customer-rg_customer-aks-byo_swedencentral | INFRA_RG: customer-rg | Location: SwedenC
 entral
 [Sun Mar 15 16:19:14 UTC 2026] VMSS detected: aks-system-34603732-vmss, Instance ID: 3, Computer Name: aks-system-34603732-vmss000003
 [Sun Mar 15 16:19:15 UTC 2026] Found private IPv6: fdf0:1e2d:3c4b::8
 [Sun Mar 15 16:19:17 UTC 2026] Creating backend pool aks-system-34603732-vmss000003-BE-ipv6 with IP fdf0:1e2d:3c4b::8...
 {
   "etag": "W/\"11a128c7-59ce-4840-95bc-0dee53addb3c\"",
-  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/backendAddressPools/aks-system-34603732-vmss000
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/loadBalancers/customer-ext-lb/backendAddressPools/aks-system-34603732-vmss000
 003-BE-ipv6",
   "loadBalancerBackendAddresses": [
     {
       "ipAddress": "fdf0:1e2d:3c4b::8",
       "name": "addr1",
       "virtualNetwork": {
-        "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/virtualNetworks/island-vnet",
-        "resourceGroup": "island-rg"
+        "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/virtualNetworks/customer-vnet",
+        "resourceGroup": "customer-rg"
       }
     }
   ],
   "name": "aks-system-34603732-vmss000003-BE-ipv6",
   "provisioningState": "Succeeded",
-  "resourceGroup": "island-rg",
+  "resourceGroup": "customer-rg",
   "type": "Microsoft.Network/loadBalancers/backendAddressPools"
 }
 [Sun Mar 15 16:19:22 UTC 2026] Prefix aks-lb-ipv6-prefix-1 does not exist. Creating (/124 IPv6 prefix)...
 [Sun Mar 15 16:19:35 UTC 2026] Attempting to create Public IP aks-system-34603732-vmss000003-pip6 in prefix aks-lb-ipv6-prefix-1...
 [Sun Mar 15 16:19:37 UTC 2026] Successfully created Public IP aks-system-34603732-vmss000003-pip6 from aks-lb-ipv6-prefix-1.
-[Sun Mar 15 16:19:38 UTC 2026] Assigning Public IP aks-system-34603732-vmss000003-pip6 as frontend on LB island-ext-lb...
+[Sun Mar 15 16:19:38 UTC 2026] Assigning Public IP aks-system-34603732-vmss000003-pip6 as frontend on LB customer-ext-lb...
 {
   "etag": "W/\"80e18e8a-d293-432c-91d3-981e730db792\"",
-  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/frontendIPConfigurations/aks-system-34603732-vm
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/loadBalancers/customer-ext-lb/frontendIPConfigurations/aks-system-34603732-vm
 ss000003-pip6",
   "name": "aks-system-34603732-vmss000003-pip6",
   "privateIPAllocationMethod": "Dynamic",
   "provisioningState": "Succeeded",
   "publicIPAddress": {
-    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/publicIPAddresses/aks-system-34603732-vmss000003-pip6",
-    "resourceGroup": "island-rg"
+    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/publicIPAddresses/aks-system-34603732-vmss000003-pip6",
+    "resourceGroup": "customer-rg"
   },
-  "resourceGroup": "island-rg",
+  "resourceGroup": "customer-rg",
   "type": "Microsoft.Network/loadBalancers/frontendIPConfigurations"
 }
 [Sun Mar 15 16:19:41 UTC 2026] Creating outbound rule aks-system-34603732-vmss000003-out-rule...
 {
   "allocatedOutboundPorts": 1024,
   "backendAddressPool": {
-    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/backendAddressPools/aks-system-34603732-vmss0
+    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/loadBalancers/customer-ext-lb/backendAddressPools/aks-system-34603732-vmss0
 00003-BE-ipv6",
-    "resourceGroup": "island-rg"
+    "resourceGroup": "customer-rg"
   },
   "enableTcpReset": false,
   "etag": "W/\"566fcae0-5fba-4ba6-b42c-85696b8846be\"",
   "frontendIPConfigurations": [
     {
-      "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/frontendIPConfigurations/aks-system-3460373
+      "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/loadBalancers/customer-ext-lb/frontendIPConfigurations/aks-system-3460373
 2-vmss000003-pip6",
-      "resourceGroup": "island-rg"
+      "resourceGroup": "customer-rg"
     }
   ],
-  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/outboundRules/aks-system-34603732-vmss000003-ou
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/loadBalancers/customer-ext-lb/outboundRules/aks-system-34603732-vmss000003-ou
 t-rule",
   "idleTimeoutInMinutes": 4,
   "name": "aks-system-34603732-vmss000003-out-rule",
   "protocol": "All",
   "provisioningState": "Succeeded",
-  "resourceGroup": "island-rg",
+  "resourceGroup": "customer-rg",
   "type": "Microsoft.Network/loadBalancers/outboundRules"
 }
 [Sun Mar 15 16:19:54 UTC 2026] Creating inbound NAT rule aks-system-34603732-vmss000003-in-rule (TCP 8080)...
 {
   "backendAddressPool": {
-    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/backendAddressPools/aks-system-34603732-vmss0
+    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/loadBalancers/customer-ext-lb/backendAddressPools/aks-system-34603732-vmss0
 00003-BE-ipv6",
-    "resourceGroup": "island-rg"
+    "resourceGroup": "customer-rg"
   },
   "backendPort": 8080,
   "enableFloatingIP": false,
   "enableTcpReset": false,
   "etag": "W/\"37c7079a-13a5-4fe5-b595-ed14c96c3ff5\"",
   "frontendIPConfiguration": {
-    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/frontendIPConfigurations/aks-system-34603732-
+    "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/loadBalancers/customer-ext-lb/frontendIPConfigurations/aks-system-34603732-
 vmss000003-pip6",
-    "resourceGroup": "island-rg"
+    "resourceGroup": "customer-rg"
   },
   "frontendPort": 0,
   "frontendPortRangeEnd": 8080,
   "frontendPortRangeStart": 8080,
-  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb/inboundNatRules/aks-system-34603732-vmss000003-
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/customer-rg/providers/Microsoft.Network/loadBalancers/customer-ext-lb/inboundNatRules/aks-system-34603732-vmss000003-
 in-rule",
   "idleTimeoutInMinutes": 4,
   "name": "aks-system-34603732-vmss000003-in-rule",
   "protocol": "Tcp",
   "provisioningState": "Succeeded",
-  "resourceGroup": "island-rg",
+  "resourceGroup": "customer-rg",
   "type": "Microsoft.Network/loadBalancers/inboundNatRules"
 }
 [Sun Mar 15 16:20:06 UTC 2026] ===== LB IPv6 setup complete for aks-system-34603732-vmss_3 =====
@@ -719,7 +722,7 @@ in-rule",
 
 # Log output of rollout of daemonset:
 [Sun Mar 15 17:00:48 UTC 2026] Authenticating to Azure via Workload Identity...                                                                                                           │
-[Sun Mar 15 17:00:51 UTC 2026] Node: aks-system-34603732-vmss_7 | VMSS: aks-system-34603732-vmss | MC_RG: MC_island-rg_island-aks-byo_swedencentral | INFRA_RG: island-rg | Location: Swe │
+[Sun Mar 15 17:00:51 UTC 2026] Node: aks-system-34603732-vmss_7 | VMSS: aks-system-34603732-vmss | MC_RG: MC_customer-rg_customer-aks-byo_swedencentral | INFRA_RG: customer-rg | Location: Swe │
 [Sun Mar 15 17:00:51 UTC 2026] VMSS detected: aks-system-34603732-vmss, Instance ID: 7, Computer Name: aks-system-34603732-vmss000007                                                     │
 [Sun Mar 15 17:00:52 UTC 2026] Found private IPv6: fdf0:1e2d:3c4b::d                                                                                                                      │
 [Sun Mar 15 17:00:52 UTC 2026] Waiting 36s (instance jitter) to avoid LB conflicts...                                                                                                     │
@@ -734,7 +737,7 @@ in-rule",
 #Log of CronJob:
 $ kubectl create job --from=cronjob/ipv6-lb-orphan-reaper manual-reaper-run -n kube-system
 [Sun Mar 15 17:46:11 UTC 2026] Authenticating to Azure via Workload Identity...                                                                                                           │
-[Sun Mar 15 17:46:14 UTC 2026] Starting orphan scan in Resource Group: island-rg                                                                                                          │
+[Sun Mar 15 17:46:14 UTC 2026] Starting orphan scan in Resource Group: customer-rg                                                                                                          │
 [Sun Mar 15 17:46:16 UTC 2026] Scan complete: No orphaned IPv6 addresses found.                                                                                                           │
 
 Log of cleanup CronJob:
