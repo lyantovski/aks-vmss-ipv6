@@ -25,7 +25,7 @@ spec:
             - /bin/bash
             - -c
             - |
-              set -e
+              set -o pipefail
               # 1. Login
               echo "[$(date)] Authenticating to Azure via Workload Identity..."
               az login --service-principal -u $AZURE_CLIENT_ID -t $AZURE_TENANT_ID \
@@ -33,63 +33,94 @@ spec:
 
               echo "[$(date)] Starting orphan scan in Resource Group: ${INFRA_RG}"
 
-              # 2. Find orphaned Public IPs created by ipv6-vmss-lb-manager that are unattached
-              ORPHAN_DATA=$(az network public-ip list -g "$INFRA_RG" \
-                --query "[?tags.managedBy=='ipv6-vmss-lb-manager' && ipConfiguration==null].[id,name,ipAddress]" -o tsv)
+              # 2. List all PIPs managed by ipv6-vmss-lb-manager
+              PIP_DATA=$(az network public-ip list -g "$INFRA_RG" \
+                --query "[?tags.managedBy=='ipv6-vmss-lb-manager'].[id,name,ipAddress]" -o tsv)
 
-              if [ -z "$ORPHAN_DATA" ]; then
-                echo "[$(date)] Scan complete: No orphaned IPv6 addresses found."
+              if [ -z "$PIP_DATA" ]; then
+                echo "[$(date)] No managed PIPs found. Nothing to check."
                 exit 0
               fi
 
-              COUNT=$(echo "$ORPHAN_DATA" | wc -l)
-              echo "[$(date)] Found $COUNT orphaned resources to clean up."
+              TOTAL=$(echo "$PIP_DATA" | wc -l)
+              echo "[$(date)] Found $TOTAL managed PIPs. Checking for orphans..."
 
-              # 3. For each orphaned PIP, also clean up related LB resources
-              echo "$ORPHAN_DATA" | while read -r id name ip; do
-                echo "------------------------------------------------------------"
-                echo "[$(date)] ORPHANED PIP:"
-                echo "  NAME: $name"
-                echo "  IP:   ${ip:-N/A}"
-                echo "  ID:   $id"
+              # 3. Discover VMSS name and MC resource group from any managed PIP's naming
+              #    PIPs are named: <vmssName><instanceId padded>-pip6
+              #    We need the VMSS name to check if instances still exist.
+              #    Get it from the LB backend pools which reference the VNET.
+              #    Alternatively, we list VMSS instances in the MC_RG.
 
-                # Derive LB resource names from PIP name (e.g. aks-system-...-pip6)
-                # Strip "-pip6" suffix to get the computer name
+              # Find the MC resource group (node RG) — look for VMSS in backend pool addresses
+              # We derive it from the configmap: the VMSS lives in MC_<INFRA_RG>_<cluster>_<location>
+              # Instead, list all VMSS instances to build a set of active computer names.
+              
+              # Find all VMSS in any resource group that starts with MC_
+              MC_RGS=$(az group list --query "[?starts_with(name,'MC_')].name" -o tsv)
+              
+              ACTIVE_COMPUTERS=""
+              for MC_RG in $MC_RGS; do
+                # List all VMSS in this MC resource group
+                VMSS_NAMES=$(az vmss list -g "$MC_RG" --query "[].name" -o tsv 2>/dev/null || true)
+                for VMSS in $VMSS_NAMES; do
+                  # Get computer names of running instances
+                  INSTANCES=$(az vmss list-instances -g "$MC_RG" --name "$VMSS" \
+                    --query "[].osProfile.computerName" -o tsv 2>/dev/null || true)
+                  if [ -n "$INSTANCES" ]; then
+                    ACTIVE_COMPUTERS="${ACTIVE_COMPUTERS}${INSTANCES}"$'\n'
+                  fi
+                done
+              done
+
+              echo "[$(date)] Active VMSS computer names collected."
+
+              # 4. For each managed PIP, check if the VMSS instance still exists
+              ORPHAN_COUNT=0
+              while read -r id name ip; do
+                [ -z "$id" ] && continue
                 COMPUTER_NAME="${name%-pip6}"
+
+                if echo "$ACTIVE_COMPUTERS" | grep -qx "$COMPUTER_NAME" 2>/dev/null; then
+                  continue  # Node still exists, skip
+                fi
+
+                ORPHAN_COUNT=$((ORPHAN_COUNT + 1))
+                echo "------------------------------------------------------------"
+                echo "[$(date)] ORPHANED (node gone): ${COMPUTER_NAME}"
+                echo "  PIP NAME: $name"
+                echo "  IP:       ${ip:-N/A}"
+
+                # Derive LB resource names
                 BE_NAME="${COMPUTER_NAME}-BE-ipv6"
                 INBOUND_RULE_NAME="${COMPUTER_NAME}-in-rule"
                 OUT_RULE_NAME="${COMPUTER_NAME}-out-rule"
                 FE_NAME="$name"
 
-                # Delete inbound NAT rule
+                # Delete in order: inbound NAT → outbound rule → frontend → backend → PIP
                 echo "[$(date)] Removing inbound NAT rule: ${INBOUND_RULE_NAME}..."
                 az network lb inbound-nat-rule delete -g "$INFRA_RG" \
                   --lb-name "$LB_NAME" --name "$INBOUND_RULE_NAME" 2>/dev/null || true
 
-                # Delete outbound rule
                 echo "[$(date)] Removing outbound rule: ${OUT_RULE_NAME}..."
                 az network lb outbound-rule delete -g "$INFRA_RG" \
                   --lb-name "$LB_NAME" --name "$OUT_RULE_NAME" 2>/dev/null || true
 
-                # Delete frontend IP config
                 echo "[$(date)] Removing frontend IP: ${FE_NAME}..."
                 az network lb frontend-ip delete -g "$INFRA_RG" \
                   --lb-name "$LB_NAME" --name "$FE_NAME" 2>/dev/null || true
 
-                # Delete backend pool
                 echo "[$(date)] Removing backend pool: ${BE_NAME}..."
                 az network lb address-pool delete -g "$INFRA_RG" \
                   --lb-name "$LB_NAME" --name "$BE_NAME" 2>/dev/null || true
 
-                # Delete orphaned Public IP
                 echo "[$(date)] Deleting Public IP: ${name}..."
                 if az network public-ip delete --ids "$id"; then
-                  echo "[$(date)] Successfully deleted ${name} and its LB resources."
+                  echo "[$(date)] Successfully cleaned up resources for ${COMPUTER_NAME}."
                 else
-                  echo "[$(date)] FAILED to delete ${name}. Check Azure Activity Log."
+                  echo "[$(date)] FAILED to delete PIP ${name}. Check Azure Activity Log."
                 fi
-              done
+              done <<< "$PIP_DATA"
 
               echo "------------------------------------------------------------"
-              echo "[$(date)] Cleanup job finished."
+              echo "[$(date)] Cleanup job finished. Orphans found: ${ORPHAN_COUNT}"
           restartPolicy: OnFailure
