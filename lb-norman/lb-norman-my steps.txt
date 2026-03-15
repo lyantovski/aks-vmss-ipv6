@@ -1,0 +1,518 @@
+az login --tenant b393e737-e60a-43b1-828e-04d7edee2de1
+
+
+# allow multiple public ip config on subscription
+az feature register --namespace "Microsoft.Network" -n "AllowMultipleIpConfigurationsPerNic"
+az provider register -n Microsoft.Network
+
+# ====== setup ======
+LOCATION="swedencentral"
+RG="island-rg"
+VNET="island-vnet"
+SUBNET="island-snet-aks"
+VNET_V4="172.16.0.0/16"
+VNET_V6="fdf0:1e2d:3c4b::/48"   
+SUBNET_V4="172.16.1.0/24"
+SUBNET_V6="fdf0:1e2d:3c4b::/64"
+
+SUBNET_ACR="island-snet-acr"
+SUBNET_ACR_V4="172.16.2.0/24"
+
+# resource group creation
+az group create -n "$RG" -l "$LOCATION"
+
+# vnet creation
+az network vnet create \
+  -g "$RG" -n "$VNET" -l "$LOCATION" \
+  --address-prefixes "$VNET_V4" "$VNET_V6" \
+  --subnet-name "$SUBNET" \
+  --subnet-prefixes "$SUBNET_V4" "$SUBNET_V6"
+
+az network vnet subnet create \
+ --name "$SUBNET_ACR" \
+ --vnet-name "$VNET" \
+ --resource-group "$RG" \
+ --address-prefixes "$SUBNET_ACR_V4" \
+ --private-endpoint-network-policies Disabled
+
+#acr subnet id
+ACR_SUBNET_ID=$(az network vnet subnet show -g "$RG" --vnet-name "$VNET" -n "$SUBNET_ACR" --query id -o tsv)
+echo "$ACR_SUBNET_ID"
+
+Output:
+$ echo "$ACR_SUBNET_ID"
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/virtualNetworks/island-vnet/subnets/island-snet-acr
+
+#subnet id
+SUBNET_ID=$(az network vnet subnet show -g "$RG" --vnet-name "$VNET" -n "$SUBNET" --query id -o tsv)
+echo "$SUBNET_ID"
+
+Output:
+$ echo "$SUBNET_ID"
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/virtualNetworks/island-vnet/subnets/island-snet-aks
+
+#create acr
+ACR_NAME="islandacr$RANDOM"
+
+Output:
+$ echo $ACR_NAME
+islandacr22149
+
+az acr create -g "$RG" \
+ --name "$ACR_NAME" \
+ --sku Premium \
+ --public-network-enabled false
+
+REGISTRY_ID=$(az acr show --name ${ACR_NAME} -g ${RG}  --query 'id' --output tsv)
+echo $REGISTRY_ID
+
+Output:
+echo $REGISTRY_ID
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.ContainerRegistry/registries/islandacr22149
+
+az acr cache create -n aks-managed-mcr \
+ -r "$ACR_NAME" \
+ -g "$RG" \
+ --source-repo "mcr.microsoft.com/*" \
+ --target-repo "aks-managed-repository/*"
+
+#create private endpoint for acr
+
+az network private-endpoint create \
+ --name ACRCacheEndpoint \
+ --resource-group $RG \
+ --vnet-name $VNET \
+ --subnet $SUBNET_ACR \
+ --private-connection-resource-id $REGISTRY_ID \
+ --group-id registry \
+ --connection-name myConnection
+
+NETWORK_INTERFACE_ID=$(az network private-endpoint show --name ACRCacheEndpoint --resource-group "$RG" --query 'networkInterfaces[0].id' --output tsv)
+REGISTRY_PRIVATE_IP=$(az network nic show --ids "$NETWORK_INTERFACE_ID" --query "ipConfigurations[?privateLinkConnectionProperties.requiredMemberName=='registry'].privateIPAddress" --output tsv)
+DATA_ENDPOINT_PRIVATE_IP=$(az network nic show --ids "$NETWORK_INTERFACE_ID" --query "ipConfigurations[?privateLinkConnectionProperties.requiredMemberName=='registry_data_$LOCATION'].privateIPAddress" --output tsv)
+
+Output:
+echo $NETWORK_INTERFACE_ID
+
+$ echo $NETWORK_INTERFACE_ID
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/networkInterfaces/ACRCacheEndpoint.nic.f2aa3d75-3eb2-4c26-b63d-f6938c837c30
+
+echo "Registry Private IP: $REGISTRY_PRIVATE_IP"
+echo "Data Endpoint Private IP: $DATA_ENDPOINT_PRIVATE_IP"
+
+Output:
+$ echo "Registry Private IP: $REGISTRY_PRIVATE_IP"
+Registry Private IP: 172.16.2.5
+$ echo "Data Endpoint Private IP: $DATA_ENDPOINT_PRIVATE_IP"
+Data Endpoint Private IP: 172.16.2.4
+
+# create dns zone for acr private endpoint
+
+az network private-dns zone create \
+ --resource-group "$RG" \
+ --name "privatelink.azurecr.io"
+
+az network private-dns link vnet create \
+ --resource-group "$RG" \
+ --zone-name "privatelink.azurecr.io" \
+ --name MyDNSLink \
+ --virtual-network "$VNET" \
+ --registration-enabled false
+
+az network private-dns record-set a create \
+ --name "$ACR_NAME" \
+ --zone-name "privatelink.azurecr.io" \
+ --resource-group "$RG"
+
+az network private-dns record-set a add-record \
+ --record-set-name "$ACR_NAME" \
+ --zone-name "privatelink.azurecr.io" \
+ --resource-group "$RG" \
+ --ipv4-address "$REGISTRY_PRIVATE_IP"
+
+az network private-dns record-set a create \
+ --name "${ACR_NAME}.${LOCATION}.data" \
+ --zone-name "privatelink.azurecr.io" \
+ --resource-group "$RG"
+
+az network private-dns record-set a add-record \
+ --record-set-name "${ACR_NAME}.${LOCATION}.data" \
+ --zone-name "privatelink.azurecr.io" \
+ --resource-group "$RG" \
+ --ipv4-address "$DATA_ENDPOINT_PRIVATE_IP"
+
+# managed identities
+CLUSTER_IDENTITY_NAME="island-aks-identity"
+KUBELET_IDENTITY_NAME="island-aks-kubelet-identity"
+
+az identity create --name ${CLUSTER_IDENTITY_NAME} --resource-group ${RG}
+az identity create --name ${KUBELET_IDENTITY_NAME} --resource-group ${RG}
+
+CLUSTER_IDENTITY_RESOURCE_ID=$(az identity show --name ${CLUSTER_IDENTITY_NAME} --resource-group ${RG} --query 'id' -o tsv)
+CLUSTER_IDENTITY_PRINCIPAL_ID=$(az identity show --name ${CLUSTER_IDENTITY_NAME} --resource-group ${RG} --query 'principalId' -o tsv)
+
+Output:
+$ echo $CLUSTER_IDENTITY_RESOURCE_ID
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/island-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/island-aks-identity
+$ echo $CLUSTER_IDENTITY_PRINCIPAL_ID
+d1046edc-789f-4118-9bc8-f6df3cb9b8cf
+
+KUBELET_IDENTITY_RESOURCE_ID=$(az identity show --name ${KUBELET_IDENTITY_NAME} --resource-group ${RG} --query 'id' -o tsv)
+KUBELET_IDENTITY_PRINCIPAL_ID=$(az identity show --name ${KUBELET_IDENTITY_NAME} --resource-group ${RG} --query 'principalId' -o tsv)
+
+Output:
+$ echo $KUBELET_IDENTITY_RESOURCE_ID
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/island-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/island-aks-kubelet-identity
+$ echo $KUBELET_IDENTITY_PRINCIPAL_ID
+fff60c38-af4f-45e5-a680-9ece5afa7143
+
+
+echo "Cluster Identity Resource ID: $CLUSTER_IDENTITY_RESOURCE_ID"
+echo "Cluster Identity Principal ID: $CLUSTER_IDENTITY_PRINCIPAL_ID"
+echo "Kubelet Identity Resource ID: $KUBELET_IDENTITY_RESOURCE_ID"
+echo "Kubelet Identity Principal ID: $KUBELET_IDENTITY_PRINCIPAL_ID"
+
+Output:
+
+Cluster Identity Resource ID: /subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/island-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/island-aks-identity
+Cluster Identity Principal ID: d1046edc-789f-4118-9bc8-f6df3cb9b8cf
+Kubelet Identity Resource ID: /subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourcegroups/island-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/island-aks-kubelet-identity
+Kubelet Identity Principal ID: fff60c38-af4f-45e5-a680-9ece5afa7143
+
+az role assignment create \
+ --role AcrPull --scope ${REGISTRY_ID}\
+ --assignee-object-id ${KUBELET_IDENTITY_PRINCIPAL_ID} \
+ --assignee-principal-type ServicePrincipal
+
+# ========== create aks cluster with ipv4 BYO CNI ==========
+AKS="island-aks-byo"
+
+#dual stack config
+POD_CIDR_V4="10.244.0.0/16"
+POD_CIDR_V6="fd12:3456:789a::/64"
+SVC_CIDR_V4="10.0.0.0/16"
+SVC_CIDR_V6="fd12:3456:789a:1::/108"
+DNS_IP_V4="10.0.0.10"
+
+
+# cluster creation dual stack - 
+# 2nd attempt with cluster autoscaler.
+
+az aks create \
+  -g "$RG" \
+  -n "$AKS" \
+  -l "$LOCATION" \
+  --vnet-subnet-id "$SUBNET_ID" \
+  --assign-identity "$CLUSTER_IDENTITY_RESOURCE_ID" \
+  --assign-kubelet-identity "$KUBELET_IDENTITY_RESOURCE_ID" \
+  --enable-managed-identity \
+  --network-plugin azure \
+  --network-plugin-mode overlay \
+  --ip-families ipv4,ipv6 \
+  --pod-cidrs "$POD_CIDR_V4,$POD_CIDR_V6" \
+  --service-cidrs "$SVC_CIDR_V4,$SVC_CIDR_V6" \
+  --nodepool-name "system" \
+  --node-count 3 \
+  --bootstrap-artifact-source Cache \
+  --bootstrap-container-registry-resource-id ${REGISTRY_ID} \
+  --outbound-type none \
+  --enable-private-cluster \
+  --generate-ssh-keys
+
+# ============ jump vm ================
+# since creating an aks cluster with outbound none disables public acces
+# we need to create a jump vm.
+
+VM_NAME="jump-vm-1"
+ADMIN_USER="islandadmin"
+ADMIN_PASSWORD="vwnIgH@{ad8'#KtB_PK("
+IPV4_PIP_NAME="${VM_NAME}-pip4-${RANDOM}"
+IPV6_PIP_NAME="${VM_NAME}-pip6-${RANDOM}"
+NIC_NAME="${VM_NAME}-nic-${RANDOM}"
+
+# Public IPv4
+az network public-ip create \
+  --resource-group "$RG" \
+  --name "$IPV4_PIP_NAME" \
+  --location "$LOCATION" \
+  --sku Standard \
+  --version IPv4
+
+Output:
+"ipAddress": "20.91.202.105"
+
+# Public IPv6
+az network public-ip create \
+  --resource-group "$RG" \
+  --name "$IPV6_PIP_NAME" \
+  --location "$LOCATION" \
+  --sku Standard \
+  --version IPv6
+
+Output:
+"ipAddress": "2603:1020:1001:22::52"
+
+# NIC with PRIMARY IPv4 config
+az network nic create \
+  --resource-group "$RG" \
+  --name "$NIC_NAME" \
+  --location "$LOCATION" \
+  --vnet-name "$VNET" \
+  --subnet "$SUBNET" \
+  --public-ip-address "$IPV4_PIP_NAME"
+
+# SECONDARY IPv6 private+public config
+az network nic ip-config create \
+  --resource-group "$RG" \
+  --nic-name "$NIC_NAME" \
+  --name "ipv6" \
+  --private-ip-address-version IPv6 \
+  --public-ip-address "$IPV6_PIP_NAME" \
+  --vnet-name "$VNET" \
+  --subnet "$SUBNET"
+
+az vm create \
+  --resource-group "$RG" \
+  --name "$VM_NAME" \
+  --location "$LOCATION" \
+  --image Ubuntu2204 \
+  --nics "$NIC_NAME" \
+  --admin-username "$ADMIN_USER" \
+  --admin-password "$ADMIN_PASSWORD" \
+  --authentication-type password \
+  --public-ip-sku Standard
+
+Output:
+$ az vm create   --resource-group "$RG"   --name "$VM_NAME"   --location "$LOCATION"   --image Ubuntu2204   --nics "$NIC_NAME"   --admin-username "$ADMIN_USER"   --admin-password "$ADMIN_PASSWORD"   --authentication-type password   --public-ip-sku Standard
+The default value of '--size' will be changed to 'Standard_D2s_v5' from 'Standard_DS1_v2' in a future release.
+{
+  "fqdns": "",
+  "id": "/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Compute/virtualMachines/jump-vm-1",
+  "location": "swedencentral",
+  "macAddress": "7C-1E-52-FA-28-D6",
+  "powerState": "VM running",
+  "privateIpAddress": "172.16.1.8,fdf0:1e2d:3c4b::7",
+  "publicIpAddress": "20.91.202.105,2603:1020:1001:22::52",
+  "resourceGroup": "island-rg"
+}
+
+ADMIN_USER="islandadmin"
+ADMIN_PASSWORD="vwnIgH@{ad8'#KtB_PK("
+
+#getting credentials file for aks
+az aks get-credentials \
+ --resource-group $RG \
+ --name $AKS --overwrite-existing \
+ --file - > kubeconfig.yaml
+
+ #cp kubeconfig.yaml ~/.kube/config
+ scp ./kubeconfig.yaml islandadmin@20.91.202.105:/home/root/ #--didnt work for me, used Bastion
+
+# ============ create LB and assign pip to vm ================
+# create lb
+LB_NAME="island-ext-lb"
+
+az network lb create \
+  -g "$RG" \
+  -n "$LB_NAME" \
+  -l "$LOCATION" \
+  --sku Standard
+
+LB_ID=$(az network lb show -g "$RG" -n "$LB_NAME" --query id -o tsv)
+echo $LB_ID
+
+Output:
+$ echo $LB_ID
+/subscriptions/a303e0dc-f916-4c4a-8af1-e40f6163e1bb/resourceGroups/island-rg/providers/Microsoft.Network/loadBalancers/island-ext-lb
+
+# create pip for each vm
+# Instance #1
+# Instance Name: aks-system-34603732-vmss_0
+# Computer Name: aks-system-34603732-vmss000000
+# Private IPv4: 172.16.1.5
+# Public IPv6: fdf0:1e2d:3c4b::4
+
+VM="aks-system-34603732-vmss000000" #VM Name
+MC_RG="MC_island-rg_island-aks-byo_swedencentral" #MC RG
+INT_PIP6="fdf0:1e2d:3c4b::4" #private ipv6 assigned to node
+
+# general naming scheme
+FE_NAME="${VM}-pip6"
+BE_NAME="${VM}-BE-ipv6"
+INBOUND_RULE_NAME="${VM}-in-rule"
+OUT_RULE_NAME="${VM}-out-rule"
+
+# creating a backend pool with vm ip
+az network lb address-pool create \
+  --resource-group "$RG" \
+  --lb-name "$LB_NAME" \
+  --name "$BE_NAME" \
+  --vnet "$VNET" \
+  --backend-addresses "[{name:addr1,ip-address:'$INT_PIP6'}]"
+
+# creating a pip.
+az network public-ip create \
+  -g "$RG" \
+  -n "$FE_NAME" \
+  -l "$LOCATION" \
+  --sku Standard \
+  --allocation-method Static \
+  --version IPv6
+
+# assigning the pip to lb frontend
+az network lb frontend-ip create \
+ -g "$RG" \
+ -n "$FE_NAME" \
+ --lb-name "$LB_NAME" \
+ --public-ip-address "$FE_NAME"
+
+# this will enable outbound on ipv6
+az network lb outbound-rule create \
+  -g "$RG" \
+  --lb-name "$LB_NAME" \
+  --name "$OUT_RULE_NAME" \
+  --frontend-ip-configs "$FE_NAME" \
+  --backend-address-pool "$BE_NAME" \
+  --protocol All
+
+# we cannot create a rule for all ports and protocols on a public lb
+# for example we create tcp for all incoming port 8080.
+az network lb inbound-nat-rule create \
+ -g $RG \
+ --lb-name $LB_NAME \
+ --name  "$INBOUND_RULE_NAME" \
+ --protocol TCP \
+ --frontend-ip-name "$FE_NAME" \
+ --frontend-port-range-start 8080 \
+ --frontend-port-range-end 8080 \
+ --floating-ip false \
+ --backend-port 8080 \
+ --backend-address-pool "$BE_NAME"
+
+# Lets do it for Instance #2
+# Instance #2
+# Instance Name: aks-system-34603732-vmss_1
+# Computer Name: aks-system-34603732-vmss000001
+# Private IPv4: 172.16.1.6
+# Public IPv6: fdf0:1e2d:3c4b::5
+
+VM="aks-system-34603732-vmss000001" #VM Name
+MC_RG="MC_island-rg_island-aks-byo_swedencentral" #MC RG
+INT_PIP6="fdf0:1e2d:3c4b::5" #private ipv6 assigned to node
+
+# general naming scheme
+FE_NAME="${VM}-pip6"
+BE_NAME="${VM}-BE-ipv6"
+INBOUND_RULE_NAME="${VM}-in-rule"
+OUT_RULE_NAME="${VM}-out-rule"
+
+# creating a backend pool with vm ip
+az network lb address-pool create \
+  --resource-group "$RG" \
+  --lb-name "$LB_NAME" \
+  --name "$BE_NAME" \
+  --vnet "$VNET" \
+  --backend-addresses "[{name:addr1,ip-address:'$INT_PIP6'}]"
+
+# creating a pip.
+az network public-ip create \
+  -g "$RG" \
+  -n "$FE_NAME" \
+  -l "$LOCATION" \
+  --sku Standard \
+  --allocation-method Static \
+  --version IPv6
+
+# assigning the pip to lb frontend
+az network lb frontend-ip create \
+ -g "$RG" \
+ -n "$FE_NAME" \
+ --lb-name "$LB_NAME" \
+ --public-ip-address "$FE_NAME"
+
+# this will enable outbound on ipv6
+az network lb outbound-rule create \
+  -g "$RG" \
+  --lb-name "$LB_NAME" \
+  --name "$OUT_RULE_NAME" \
+  --frontend-ip-configs "$FE_NAME" \
+  --backend-address-pool "$BE_NAME" \
+  --protocol All
+
+# we cannot create a rule for all ports and protocols on a public lb
+# for example we create tcp for all incoming port 8080.
+az network lb inbound-nat-rule create \
+ -g $RG \
+ --lb-name $LB_NAME \
+ --name  "$INBOUND_RULE_NAME" \
+ --protocol TCP \
+ --frontend-ip-name "$FE_NAME" \
+ --frontend-port-range-start 8080 \
+ --frontend-port-range-end 8080 \
+ --floating-ip false \
+ --backend-port 8080 \
+ --backend-address-pool "$BE_NAME"
+
+# Lets do it for Instance #3
+# Instance #3
+# Instance Name: aks-system-34603732-vmss_2
+# Computer Name: aks-system-34603732-vmss000002
+# Private IPv4: 172.16.1.7
+# Public IPv6: fdf0:1e2d:3c4b::6
+
+VM="aks-system-34603732-vmss000002" #VM Name
+MC_RG="MC_island-rg_island-aks-byo_swedencentral" #MC RG
+INT_PIP6="fdf0:1e2d:3c4b::5" #private ipv6 assigned to node
+
+# general naming scheme
+FE_NAME="${VM}-pip6"
+BE_NAME="${VM}-BE-ipv6"
+INBOUND_RULE_NAME="${VM}-in-rule"
+OUT_RULE_NAME="${VM}-out-rule"
+
+# creating a backend pool with vm ip
+az network lb address-pool create \
+  --resource-group "$RG" \
+  --lb-name "$LB_NAME" \
+  --name "$BE_NAME" \
+  --vnet "$VNET" \
+  --backend-addresses "[{name:addr1,ip-address:'$INT_PIP6'}]"
+
+# creating a pip.
+az network public-ip create \
+  -g "$RG" \
+  -n "$FE_NAME" \
+  -l "$LOCATION" \
+  --sku Standard \
+  --allocation-method Static \
+  --version IPv6
+
+# assigning the pip to lb frontend
+az network lb frontend-ip create \
+ -g "$RG" \
+ -n "$FE_NAME" \
+ --lb-name "$LB_NAME" \
+ --public-ip-address "$FE_NAME"
+
+# this will enable outbound on ipv6
+az network lb outbound-rule create \
+  -g "$RG" \
+  --lb-name "$LB_NAME" \
+  --name "$OUT_RULE_NAME" \
+  --frontend-ip-configs "$FE_NAME" \
+  --backend-address-pool "$BE_NAME" \
+  --protocol All
+
+# we cannot create a rule for all ports and protocols on a public lb
+# for example we create tcp for all incoming port 8080.
+az network lb inbound-nat-rule create \
+ -g $RG \
+ --lb-name $LB_NAME \
+ --name  "$INBOUND_RULE_NAME" \
+ --protocol TCP \
+ --frontend-ip-name "$FE_NAME" \
+ --frontend-port-range-start 8080 \
+ --frontend-port-range-end 8080 \
+ --floating-ip false \
+ --backend-port 8080 \
+ --backend-address-pool "$BE_NAME"
