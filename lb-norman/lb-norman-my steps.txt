@@ -736,5 +736,16 @@ $ kubectl create job --from=cronjob/ipv6-lb-orphan-reaper manual-reaper-run -n k
 [Sun Mar 15 17:46:11 UTC 2026] Authenticating to Azure via Workload Identity...                                                                                                           │
 [Sun Mar 15 17:46:14 UTC 2026] Starting orphan scan in Resource Group: island-rg                                                                                                          │
 [Sun Mar 15 17:46:16 UTC 2026] Scan complete: No orphaned IPv6 addresses found.                                                                                                           │
-                                                                                                                    │
+
+Log of cleanup CronJob:
+[Sun Mar 15 17:58:59 UTC 2026] ORPHANED (node gone): aks-system-34603732-vmss000005
+  PIP NAME: aks-system-34603732-vmss000005-pip6
+  IP:       2603:1020:1001:4::1f4
+[Sun Mar 15 17:58:59 UTC 2026] Removing inbound NAT rule: aks-system-34603732-vmss000005-in-rule...
+[Sun Mar 15 17:59:12 UTC 2026] Removing outbound rule: aks-system-34603732-vmss000005-out-rule...
+[Sun Mar 15 17:59:14 UTC 2026] Removing frontend IP: aks-system-34603732-vmss000005-pip6...
+[Sun Mar 15 17:59:26 UTC 2026] Removing backend pool: aks-system-34603732-vmss000005-BE-ipv6...
+[Sun Mar 15 17:59:38 UTC 2026] Deleting Public IP: aks-system-34603732-vmss000005-pip6...
+[Sun Mar 15 17:59:50 UTC 2026] Successfully cleaned up resources for aks-system-34603732-vmss000005.
+------------------------------------------------------------                                                                                                       │
 │                                                                       
