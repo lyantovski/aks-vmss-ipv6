@@ -11,7 +11,8 @@ data:
   NAT_PORT: "8080"
   manage-lb-ipv6.sh: |
     #!/bin/bash
-    set -e
+    # Note: NOT using set -e so the retry wrapper can handle transient Azure LB errors
+    set -o pipefail
 
     # ==================== Configuration ====================
     LB_NAME="${LB_NAME:?LB_NAME env var is required}"
@@ -19,6 +20,29 @@ data:
     INFRA_RG="${INFRA_RG:?INFRA_RG env var is required}"
     PREFIX_BASE_NAME="${PREFIX_BASE_NAME:-aks-lb-ipv6-prefix}"
     NAT_PORT="${NAT_PORT:-8080}"
+    MAX_RETRIES=5
+    RETRY_BASE_DELAY=15
+
+    # ==================== Retry helper ====================
+    # Retries a command on Azure LB concurrency conflicts (Canceled/Conflict/RetryableError)
+    run_with_retry() {
+      local attempt=1
+      local output=""
+      while [ $attempt -le $MAX_RETRIES ]; do
+        output=$("$@" 2>&1) && { echo "$output"; return 0; }
+        if echo "$output" | grep -qiE "Canceled|CanceledAndSuperseded|Conflict|AnotherOperation|RetryableError"; then
+          local jitter=$(( (RANDOM % 10) + RETRY_BASE_DELAY * attempt ))
+          echo "[$(date)] LB conflict on attempt $attempt/$MAX_RETRIES. Retrying in ${jitter}s..."
+          sleep "$jitter"
+          attempt=$((attempt + 1))
+        else
+          echo "$output" >&2
+          return 1
+        fi
+      done
+      echo "[$(date)] ERROR: Exhausted $MAX_RETRIES retries." >&2
+      return 1
+    }
 
     # ==================== Authentication ====================
     echo "[$(date)] Authenticating to Azure via Workload Identity..."
@@ -53,6 +77,7 @@ data:
     else
       # Standalone VM
       COMPUTER_NAME="$VM_NAME"
+      INSTANCE_ID=0
       NIC_ID=$(az vm show -g "$MC_RG" -n "$VM_NAME" \
         --query "networkProfile.networkInterfaces[0].id" -o tsv)
       NIC_NAME=$(echo "$NIC_ID" | rev | cut -d'/' -f1 | rev)
@@ -67,6 +92,12 @@ data:
     fi
     echo "[$(date)] Found private IPv6: ${INT_PIP6}"
 
+    # ==================== Startup Jitter ====================
+    # Stagger pods so they don't all mutate the LB simultaneously
+    JITTER=$(( (INSTANCE_ID * 30) + (RANDOM % 15) ))
+    echo "[$(date)] Waiting ${JITTER}s (instance jitter) to avoid LB conflicts..."
+    sleep "$JITTER"
+
     # ==================== Naming Convention ====================
     FE_NAME="${COMPUTER_NAME}-pip6"
     BE_NAME="${COMPUTER_NAME}-BE-ipv6"
@@ -77,7 +108,7 @@ data:
     LB_EXISTS=$(az network lb show -g "$INFRA_RG" -n "$LB_NAME" --query id -o tsv 2>/dev/null || true)
     if [ -z "$LB_EXISTS" ]; then
       echo "[$(date)] Load Balancer ${LB_NAME} not found. Creating..."
-      az network lb create -g "$INFRA_RG" -n "$LB_NAME" -l "$LOCATION" --sku Standard --no-wait false
+      run_with_retry az network lb create -g "$INFRA_RG" -n "$LB_NAME" -l "$LOCATION" --sku Standard --no-wait false
     fi
 
     # ==================== A. Backend Address Pool ====================
@@ -88,7 +119,7 @@ data:
       echo "[$(date)] Backend pool ${BE_NAME} already exists. Skipping."
     else
       echo "[$(date)] Creating backend pool ${BE_NAME} with IP ${INT_PIP6}..."
-      az network lb address-pool create \
+      run_with_retry az network lb address-pool create \
         --resource-group "$INFRA_RG" \
         --lb-name "$LB_NAME" \
         --name "$BE_NAME" \
@@ -154,7 +185,7 @@ data:
       echo "[$(date)] Frontend IP ${FE_NAME} already exists on LB. Skipping."
     else
       echo "[$(date)] Assigning Public IP ${FE_NAME} as frontend on LB ${LB_NAME}..."
-      az network lb frontend-ip create \
+      run_with_retry az network lb frontend-ip create \
         -g "$INFRA_RG" \
         -n "$FE_NAME" \
         --lb-name "$LB_NAME" \
@@ -169,7 +200,7 @@ data:
       echo "[$(date)] Outbound rule ${OUT_RULE_NAME} already exists. Skipping."
     else
       echo "[$(date)] Creating outbound rule ${OUT_RULE_NAME}..."
-      az network lb outbound-rule create \
+      run_with_retry az network lb outbound-rule create \
         -g "$INFRA_RG" \
         --lb-name "$LB_NAME" \
         --name "$OUT_RULE_NAME" \
@@ -186,7 +217,7 @@ data:
       echo "[$(date)] Inbound NAT rule ${INBOUND_RULE_NAME} already exists. Skipping."
     else
       echo "[$(date)] Creating inbound NAT rule ${INBOUND_RULE_NAME} (TCP ${NAT_PORT})..."
-      az network lb inbound-nat-rule create \
+      run_with_retry az network lb inbound-nat-rule create \
         -g "$INFRA_RG" \
         --lb-name "$LB_NAME" \
         --name "$INBOUND_RULE_NAME" \
