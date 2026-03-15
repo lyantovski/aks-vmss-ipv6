@@ -480,8 +480,8 @@ kubectl logs -f daemonset/node-ipv6-lb-manager -n kube-system
 The `ipv6-lb-orphan-reaper` CronJob runs hourly to clean up LB resources for nodes that no longer exist (e.g., after autoscaler scale-down).
 
 **How it works:**
-1. Lists all PIPs tagged `managedBy=ipv6-vmss-lb-manager` in `INFRA_RG`.
-2. Discovers all MC_* resource groups and builds a set of active VMSS computer names.
+1. Lists all PIPs tagged `managedBy=ipv6-vmss-lb-manager` in `INFRA_RG` (e.g. `customer-rg`).
+2. Lists all active VMSS computer names in the node resource group (`MC_*`).
 3. For each PIP whose corresponding VMSS instance is gone, deletes: inbound NAT rule → outbound rule → frontend IP → backend pool → PIP.
 
 **Manual trigger after a scale-down:**
