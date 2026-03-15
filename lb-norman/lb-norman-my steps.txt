@@ -716,3 +716,25 @@ in-rule",
 }
 [Sun Mar 15 16:20:06 UTC 2026] ===== LB IPv6 setup complete for aks-system-34603732-vmss_3 =====
 [Sun Mar 15 16:20:06 UTC 2026] Script finished. Sleeping to keep pod alive.
+
+# Log output of rollout of daemonset:
+[Sun Mar 15 17:00:48 UTC 2026] Authenticating to Azure via Workload Identity...                                                                                                           │
+[Sun Mar 15 17:00:51 UTC 2026] Node: aks-system-34603732-vmss_7 | VMSS: aks-system-34603732-vmss | MC_RG: MC_island-rg_island-aks-byo_swedencentral | INFRA_RG: island-rg | Location: Swe │
+[Sun Mar 15 17:00:51 UTC 2026] VMSS detected: aks-system-34603732-vmss, Instance ID: 7, Computer Name: aks-system-34603732-vmss000007                                                     │
+[Sun Mar 15 17:00:52 UTC 2026] Found private IPv6: fdf0:1e2d:3c4b::d                                                                                                                      │
+[Sun Mar 15 17:00:52 UTC 2026] Waiting 36s (instance jitter) to avoid LB conflicts...                                                                                                     │
+[Sun Mar 15 17:01:31 UTC 2026] Backend pool aks-system-34603732-vmss000007-BE-ipv6 already exists. Skipping.                                                                              │
+[Sun Mar 15 17:01:32 UTC 2026] Public IP aks-system-34603732-vmss000007-pip6 already exists. Skipping creation.                                                                           │
+[Sun Mar 15 17:01:33 UTC 2026] Frontend IP aks-system-34603732-vmss000007-pip6 already exists on LB. Skipping.                                                                            │
+[Sun Mar 15 17:01:35 UTC 2026] Outbound rule aks-system-34603732-vmss000007-out-rule already exists. Skipping.                                                                            │
+[Sun Mar 15 17:01:36 UTC 2026] Inbound NAT rule aks-system-34603732-vmss000007-in-rule already exists. Skipping.                                                                          │
+[Sun Mar 15 17:01:36 UTC 2026] ===== LB IPv6 setup complete for aks-system-34603732-vmss_7 =====                                                                                          │
+[Sun Mar 15 17:01:36 UTC 2026] Script finished. Sleeping to keep pod alive.  
+
+#Log of CronJob:
+$ kubectl create job --from=cronjob/ipv6-lb-orphan-reaper manual-reaper-run -n kube-system
+[Sun Mar 15 17:46:11 UTC 2026] Authenticating to Azure via Workload Identity...                                                                                                           │
+[Sun Mar 15 17:46:14 UTC 2026] Starting orphan scan in Resource Group: island-rg                                                                                                          │
+[Sun Mar 15 17:46:16 UTC 2026] Scan complete: No orphaned IPv6 addresses found.                                                                                                           │
+                                                                                                                    │
+│                                                                       
