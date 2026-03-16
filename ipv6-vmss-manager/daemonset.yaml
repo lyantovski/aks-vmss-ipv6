@@ -25,6 +25,11 @@ spec:
             /bin/bash /scripts/manage-lb-ipv6.sh
             echo "[$(date)] Script finished. Sleeping to keep pod alive."
             sleep infinity
+        env:
+        - name: AZURE_CORE_COLLECT_TELEMETRY
+          value: "0"
+        - name: AZURE_CORE_NO_COLOR
+          value: "1"
         envFrom:
         - configMapRef:
             name: ipv6-vmss-lb-manager
