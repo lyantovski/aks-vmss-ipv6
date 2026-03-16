@@ -45,11 +45,46 @@ data:
     }
 
     # ==================== Authentication ====================
+    # Suppress az CLI auto-update and telemetry to prevent hangs
+    export AZURE_CORE_NO_COLOR=1
+    export AZURE_CORE_COLLECT_TELEMETRY=0
+    LOGIN_TIMEOUT=30
+
     echo "[$(date)] Authenticating to Azure via Workload Identity..."
-    az login --service-principal \
+
+    # Pre-flight: verify Workload Identity env vars are injected
+    if [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_TENANT_ID" ] || [ -z "$AZURE_FEDERATED_TOKEN_FILE" ]; then
+      echo "[$(date)] ERROR: Workload Identity env vars missing (AZURE_CLIENT_ID, AZURE_TENANT_ID, or AZURE_FEDERATED_TOKEN_FILE)."
+      echo "[$(date)] Ensure the ServiceAccount has azure.workload.identity/client-id annotation and the pod label azure.workload.identity/use=true."
+      exit 1
+    fi
+
+    if [ ! -s "$AZURE_FEDERATED_TOKEN_FILE" ]; then
+      echo "[$(date)] ERROR: Federated token file '$AZURE_FEDERATED_TOKEN_FILE' is missing or empty."
+      exit 1
+    fi
+
+    # Pre-flight: verify outbound connectivity to Azure AD
+    echo "[$(date)] Checking outbound connectivity to login.microsoftonline.com..."
+    if ! timeout 10 bash -c 'echo > /dev/tcp/login.microsoftonline.com/443' 2>/dev/null; then
+      echo "[$(date)] ERROR: Cannot reach login.microsoftonline.com:443."
+      echo "[$(date)] The node has no outbound internet connectivity. Ensure the VMSS/subnet has:"
+      echo "[$(date)]   - A NAT Gateway, or"
+      echo "[$(date)]   - An outbound rule on a Load Balancer, or"
+      echo "[$(date)]   - A route to a firewall/proxy with FQDN rules allowing login.microsoftonline.com and management.azure.com"
+      exit 1
+    fi
+    echo "[$(date)] Outbound connectivity OK."
+
+    if ! timeout "$LOGIN_TIMEOUT" az login --service-principal \
       -u "$AZURE_CLIENT_ID" \
       -t "$AZURE_TENANT_ID" \
-      --federated-token "$(cat "$AZURE_FEDERATED_TOKEN_FILE")" > /dev/null
+      --federated-token "$(cat "$AZURE_FEDERATED_TOKEN_FILE")" \
+      --only-show-errors 2>&1; then
+      echo "[$(date)] ERROR: az login failed (timeout=${LOGIN_TIMEOUT}s). Check Workload Identity federation, RBAC, and outbound connectivity."
+      exit 1
+    fi
+    echo "[$(date)] Authentication successful."
 
     # ==================== 1. Metadata Collection ====================
     VM_NAME=$(curl -s -H Metadata:true \
